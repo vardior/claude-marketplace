@@ -1,0 +1,112 @@
+{
+  "id": "rbac",
+  "name": "Role-Based Access Control",
+  "aliases": ["permissions", "roles", "access control", "user permissions"],
+  "category": "security",
+  "status": "documented",
+  "documented_at": "2024-12-20T10:00:00Z",
+  
+  "tier_availability": {
+    "free": "3 default roles (Admin, Member, Viewer) - cannot create custom roles",
+    "pro": "Custom roles (up to 10), granular permissions, role duplication",
+    "enterprise": "Unlimited roles, permission inheritance, IP-based restrictions, audit logging"
+  },
+  
+  "description": "Control who can see and do what within your workspace. Define custom roles with specific permission sets, then assign those roles to team members. Permissions are additive across roles - users get the union of all permissions from all their assigned roles.",
+  
+  "capabilities": [
+    {
+      "name": "View roles",
+      "description": "See all roles and their permission sets",
+      "ui_location": "Settings > Permissions",
+      "api_endpoint": "GET /api/roles",
+      "permissions": ["ViewRoles"],
+      "tier": ["free", "pro", "enterprise"]
+    },
+    {
+      "name": "Create custom roles",
+      "description": "Define new roles with custom permission combinations",
+      "ui_location": "Settings > Permissions > New Role button",
+      "api_endpoint": "POST /api/roles",
+      "permissions": ["ManageRoles"],
+      "tier": ["pro", "enterprise"]
+    },
+    {
+      "name": "Edit role permissions",
+      "description": "Modify which permissions a role grants",
+      "ui_location": "Settings > Permissions > Role detail panel",
+      "api_endpoint": "PUT /api/roles/{id}",
+      "permissions": ["ManageRoles"],
+      "tier": ["pro", "enterprise"]
+    },
+    {
+      "name": "Assign roles to users",
+      "description": "Give users specific roles to control their access",
+      "ui_location": "Settings > Team > Member row > Edit roles",
+      "api_endpoint": "PUT /api/users/{id}/roles",
+      "permissions": ["ManageTeam"],
+      "tier": ["free", "pro", "enterprise"]
+    },
+    {
+      "name": "Permission inheritance",
+      "description": "Child workspaces inherit parent workspace permissions",
+      "ui_location": "Workspace Settings > Security > Inheritance toggle",
+      "api_endpoint": "PUT /api/workspace/settings",
+      "permissions": ["ManageWorkspace"],
+      "tier": ["enterprise"]
+    }
+  ],
+  
+  "limitations": [
+    {
+      "description": "Cannot restrict access to individual resources",
+      "detail": "Permissions apply at the resource TYPE level (e.g., all pipelines), not individual resources",
+      "workaround": "Use separate workspaces or projects to create logical boundaries"
+    },
+    {
+      "description": "Role changes propagate with delay",
+      "detail": "After changing a user's roles, it may take up to 5 minutes for all permissions to update",
+      "workaround": "User can log out and back in to force immediate refresh"
+    },
+    {
+      "description": "Cannot delete default roles",
+      "detail": "Admin, Member, and Viewer roles cannot be deleted or renamed",
+      "workaround": "Create custom roles with different names if needed"
+    },
+    {
+      "description": "Maximum 10 custom roles on Pro plan",
+      "detail": "Pro workspaces are limited to 10 custom roles",
+      "workaround": "Upgrade to Enterprise for unlimited roles"
+    }
+  ],
+  
+  "configuration": [
+    {
+      "name": "Default role for new members",
+      "location": "Workspace Settings > Defaults",
+      "type": "select",
+      "default": "Member",
+      "description": "Role automatically assigned to users who join the workspace"
+    },
+    {
+      "name": "Require 2FA for admin role",
+      "location": "Workspace Settings > Security",
+      "type": "boolean",
+      "default": false,
+      "description": "Users must have 2FA enabled to be assigned the Admin role"
+    },
+    {
+      "name": "Permission inheritance",
+      "location": "Workspace Settings > Security",
+      "type": "boolean",
+      "default": true,
+      "description": "Child workspaces inherit permission settings from parent (Enterprise only)"
+    }
+  ],
+  
+  "related_features": [
+    {"id": "teams", "relationship": "Roles are assigned to team members"},
+    {"id": "audit-logging", "relationship": "Permission changes are logged (Enterprise)"},
+    {"id": "sso", "relationship": "SSO can auto-assign roles based on IdP groups"}
+  ]
+}

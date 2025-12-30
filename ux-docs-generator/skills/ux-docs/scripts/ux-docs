@@ -1,0 +1,1456 @@
+#!/usr/bin/env python3
+"""
+ux-docs - Zero-dependency documentation management CLI for LLM agents.
+
+This single file handles all state management, file I/O, and formatting
+so that LLM agents can focus purely on code investigation.
+"""
+
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+import sys
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
+DOCS_ROOT = Path(".ux-doccs")
+LOCK_FILE = DOCS_ROOT / ".lock"
+
+
+# =============================================================================
+# UTILITIES
+# =============================================================================
+
+def now_iso() -> str:
+    """Current timestamp in ISO format."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def generate_id(prefix: str, content: str) -> str:
+    """Generate deterministic ID from content."""
+    hash_val = hashlib.sha256(content.encode()).hexdigest()[:8]
+    return f"{prefix}-{hash_val}"
+
+
+@contextmanager
+def file_lock():
+    """Context manager for file-based locking."""
+    DOCS_ROOT.mkdir(parents=True, exist_ok=True)
+    lock_fd = open(LOCK_FILE, "w")
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
+
+
+def read_json(path: Path) -> dict:
+    """Read JSON file, return empty dict if not exists."""
+    if not path.exists():
+        return {}
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def write_json(path: Path, data: dict) -> None:
+    """Write JSON atomically."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(".tmp")
+    with open(temp_path, "w") as f:
+        json.dump(data, f, indent=2)
+    temp_path.replace(path)
+
+
+def write_text(path: Path, content: str) -> None:
+    """Write text file atomically."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(".tmp")
+    with open(temp_path, "w") as f:
+        f.write(content)
+    temp_path.replace(path)
+
+
+def ok(data: dict) -> dict:
+    """Wrap successful response."""
+    return {"success": True, **data}
+
+
+def err(message: str) -> dict:
+    """Wrap error response."""
+    return {"success": False, "error": message}
+
+
+def parse_json_arg(value: str, name: str) -> Any:
+    """Parse a JSON argument, return error dict if invalid."""
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError as e:
+        return err(f"Invalid JSON in --{name}: {e}")
+
+
+def parse_list_arg(value: str) -> List[str]:
+    """Parse comma-separated list."""
+    if not value:
+        return []
+    return [v.strip() for v in value.split(",") if v.strip()]
+
+
+def slugify(text: str) -> str:
+    """Convert text to URL-safe slug."""
+    import re
+    text = text.lower().strip()
+    text = re.sub(r'[^\w\s-]', '', text)
+    text = re.sub(r'[\s_]+', '-', text)
+    text = re.sub(r'-+', '-', text)
+    return text[:50]  # Limit length for filenames
+
+
+# =============================================================================
+# INITIALIZATION
+# =============================================================================
+
+def cmd_init(args) -> dict:
+    """Initialize documentation project."""
+    with file_lock():
+        project_file = DOCS_ROOT / "project.json"
+        
+        if project_file.exists():
+            return err("Project already initialized. Delete .ux-doccs to reinitialize.")
+        
+        project = {
+            "name": args.name,
+            "initialized_at": now_iso(),
+            "frontend": {"framework": args.frontend, "routes_path": args.frontend_routes} if args.frontend else None,
+            "backend": {"framework": args.backend, "routes_path": args.backend_routes} if args.backend else None,
+            "existing_docs": args.existing_docs,
+            "skip_areas": parse_list_arg(args.skip_areas)
+        }
+        
+        manifest = {
+            "phase": "discovery",
+            "started_at": now_iso(),
+            "last_activity": now_iso(),
+            "phases": {
+                "initialization": "completed",
+                "discovery": {
+                    "frontend": "pending" if args.frontend else "skipped",
+                    "backend": "pending" if args.backend else "skipped",
+                    "features": "pending"
+                },
+                "documentation": "pending",
+                "deep_dive": "pending",
+                "editorial": "pending"
+            },
+            "entry_points": {"pages": [], "apis": []},
+            "features": {"confirmed": [], "candidates": [], "dismissed": []},
+            "stats": {
+                "pages": {"found": 0, "documented": 0, "failed": 0},
+                "apis": {"found": 0, "documented": 0, "failed": 0},
+                "features": {"confirmed": 0, "documented": 0, "candidates": 0},
+                "todos": {"created": 0, "completed": 0, "pending": 0}
+            },
+            "work_log": [{"timestamp": now_iso(), "phase": "initialization", "action": "project_created", "result": "success"}]
+        }
+        
+        jargon = {"terms": {}, "updated_at": now_iso()}
+        
+        # Create directories
+        for d in ["docs/pages", "docs/api/ui", "docs/api/public", "features", "todos", "editorial"]:
+            (DOCS_ROOT / d).mkdir(parents=True, exist_ok=True)
+        
+        write_json(project_file, project)
+        write_json(DOCS_ROOT / "manifest.json", manifest)
+        write_json(DOCS_ROOT / "jargon.json", jargon)
+        
+        return ok({"message": f"Initialized: {args.name}", "phase": "discovery"})
+
+
+# =============================================================================
+# DISCOVERY
+# =============================================================================
+
+def cmd_add_page(args) -> dict:
+    """Register a discovered page."""
+    with file_lock():
+        manifest = read_json(DOCS_ROOT / "manifest.json")
+        if not manifest:
+            return err("Project not initialized. Run 'ux-docs init' first.")
+        
+        page_id = generate_id("page", args.route)
+        
+        if any(p["id"] == page_id for p in manifest["entry_points"]["pages"]):
+            return err(f"Page already registered: {args.route}")
+        
+        page = {
+            "id": page_id,
+            "route": args.route,
+            "component": args.component,
+            "guards": parse_list_arg(args.guards),
+            "params": parse_list_arg(args.params),
+            "section": args.section,
+            "priority": args.priority,
+            "lazy": args.lazy,
+            "status": "pending",
+            "discovered_at": now_iso()
+        }
+        
+        manifest["entry_points"]["pages"].append(page)
+        manifest["stats"]["pages"]["found"] += 1
+        manifest["last_activity"] = now_iso()
+        
+        write_json(DOCS_ROOT / "manifest.json", manifest)
+        return ok({"id": page_id, "route": args.route, "message": f"Registered page: {args.route}"})
+
+
+def cmd_add_api(args) -> dict:
+    """Register a discovered API endpoint."""
+    with file_lock():
+        manifest = read_json(DOCS_ROOT / "manifest.json")
+        if not manifest:
+            return err("Project not initialized.")
+        
+        api_id = generate_id("api", f"{args.method} {args.route}")
+        
+        if any(a["id"] == api_id for a in manifest["entry_points"]["apis"]):
+            return err(f"API already registered: {args.method} {args.route}")
+        
+        api = {
+            "id": api_id,
+            "method": args.method,
+            "route": args.route,
+            "handler": args.handler,
+            "file": args.file,
+            "type": args.type,
+            "auth": args.auth,
+            "priority": args.priority,
+            "status": "pending",
+            "discovered_at": now_iso()
+        }
+        
+        manifest["entry_points"]["apis"].append(api)
+        manifest["stats"]["apis"]["found"] += 1
+        manifest["last_activity"] = now_iso()
+        
+        write_json(DOCS_ROOT / "manifest.json", manifest)
+        return ok({"id": api_id, "endpoint": f"{args.method} {args.route}"})
+
+
+def cmd_add_feature(args) -> dict:
+    """Register a confirmed feature."""
+    with file_lock():
+        manifest = read_json(DOCS_ROOT / "manifest.json")
+        if not manifest:
+            return err("Project not initialized.")
+        
+        feature_id = args.id.lower().replace(" ", "-")
+        
+        if any(f["id"] == feature_id for f in manifest["features"]["confirmed"]):
+            return err(f"Feature already registered: {feature_id}")
+        
+        sources = parse_json_arg(args.sources, "sources")
+        if isinstance(sources, dict) and not sources.get("success", True):
+            return sources
+        
+        tiers = ["free", "pro", "enterprise"] if args.tiers == "all" else parse_list_arg(args.tiers)
+        
+        feature = {
+            "id": feature_id,
+            "name": args.name,
+            "category": args.category,
+            "sources": sources or [],
+            "tier_availability": tiers,
+            "priority": args.priority,
+            "status": "pending",
+            "discovered_at": now_iso()
+        }
+        
+        manifest["features"]["confirmed"].append(feature)
+        manifest["stats"]["features"]["confirmed"] += 1
+        manifest["last_activity"] = now_iso()
+        
+        (DOCS_ROOT / "features" / feature_id).mkdir(parents=True, exist_ok=True)
+        
+        write_json(DOCS_ROOT / "manifest.json", manifest)
+        return ok({"id": feature_id, "name": args.name})
+
+
+def cmd_add_candidate(args) -> dict:
+    """Register a feature candidate."""
+    with file_lock():
+        manifest = read_json(DOCS_ROOT / "manifest.json")
+        if not manifest:
+            return err("Project not initialized.")
+        
+        candidate_id = f"candidate-{args.id.lower().replace(' ', '-')}"
+        
+        if any(c["id"] == candidate_id for c in manifest["features"]["candidates"]):
+            return err(f"Candidate already registered: {candidate_id}")
+        
+        candidate = {
+            "id": candidate_id,
+            "suspected_name": args.name,
+            "signal": args.signal,
+            "source": args.source,
+            "status": "needs_investigation",
+            "discovered_at": now_iso()
+        }
+        
+        manifest["features"]["candidates"].append(candidate)
+        manifest["stats"]["features"]["candidates"] += 1
+        manifest["last_activity"] = now_iso()
+        
+        write_json(DOCS_ROOT / "manifest.json", manifest)
+        return ok({"id": candidate_id, "name": args.name})
+
+
+# =============================================================================
+# DOCUMENTATION
+# =============================================================================
+
+def cmd_doc_page(args) -> dict:
+    """Create documentation for a page."""
+    with file_lock():
+        manifest = read_json(DOCS_ROOT / "manifest.json")
+        if not manifest:
+            return err("Project not initialized.")
+        
+        page_idx = next((i for i, p in enumerate(manifest["entry_points"]["pages"]) if p["id"] == args.id), None)
+        if page_idx is None:
+            return err(f"Page not found: {args.id}")
+        
+        page = manifest["entry_points"]["pages"][page_idx]
+        
+        actions = parse_json_arg(args.actions, "actions")
+        if isinstance(actions, dict) and not actions.get("success", True):
+            return actions
+        
+        permissions = parse_json_arg(args.permissions, "permissions") or []
+        features = parse_json_arg(args.features, "features") or []
+        states = parse_json_arg(args.states, "states") or []
+        related = parse_json_arg(args.related, "related") or []
+        
+        # Generate markdown
+        content = generate_page_md(page, args.purpose, actions, permissions, features, states, related, args.notes)
+        
+        # Determine path
+        section = page.get("section", "main")
+        route_slug = page["route"].strip("/").replace("/", "-").replace(":", "_") or "index"
+        doc_path = DOCS_ROOT / "docs" / "pages" / section / f"{route_slug}.md"
+        
+        write_text(doc_path, content)
+        
+        # Update manifest
+        manifest["entry_points"]["pages"][page_idx].update({
+            "status": "documented",
+            "documented_at": now_iso(),
+            "doc_path": str(doc_path.relative_to(DOCS_ROOT)),
+            "features": features
+        })
+        manifest["stats"]["pages"]["documented"] += 1
+        manifest["last_activity"] = now_iso()
+        manifest["work_log"].append({"timestamp": now_iso(), "phase": "documentation", "action": "documented", "target": args.id, "result": "success"})
+        
+        write_json(DOCS_ROOT / "manifest.json", manifest)
+        return ok({"id": args.id, "doc_path": str(doc_path)})
+
+
+def cmd_doc_api(args) -> dict:
+    """Create documentation for an API endpoint."""
+    with file_lock():
+        manifest = read_json(DOCS_ROOT / "manifest.json")
+        if not manifest:
+            return err("Project not initialized.")
+        
+        api_idx = next((i for i, a in enumerate(manifest["entry_points"]["apis"]) if a["id"] == args.id), None)
+        if api_idx is None:
+            return err(f"API not found: {args.id}")
+        
+        api = manifest["entry_points"]["apis"][api_idx]
+        
+        params = parse_json_arg(args.params, "params") or {}
+        request_body = parse_json_arg(args.request_body, "request_body")
+        response = parse_json_arg(args.response, "response")
+        errors = parse_json_arg(args.errors, "errors") or []
+        permissions = parse_json_arg(args.permissions, "permissions") or []
+        features = parse_json_arg(args.features, "features") or []
+        
+        content = generate_api_md(api, args.purpose, args.ui_trigger, params, request_body, response, errors, permissions)
+        
+        api_type_dir = "ui" if api["type"] == "ui-api" else "public"
+        route_slug = api["route"].strip("/").replace("/", "-").replace(":", "_")
+        doc_path = DOCS_ROOT / "docs" / "api" / api_type_dir / f"{api['method'].lower()}-{route_slug}.md"
+        
+        write_text(doc_path, content)
+        
+        manifest["entry_points"]["apis"][api_idx].update({
+            "status": "documented",
+            "documented_at": now_iso(),
+            "doc_path": str(doc_path.relative_to(DOCS_ROOT)),
+            "features": features
+        })
+        manifest["stats"]["apis"]["documented"] += 1
+        manifest["last_activity"] = now_iso()
+        manifest["work_log"].append({"timestamp": now_iso(), "phase": "documentation", "action": "documented", "target": args.id, "result": "success"})
+        
+        write_json(DOCS_ROOT / "manifest.json", manifest)
+        return ok({"id": args.id, "doc_path": str(doc_path)})
+
+
+def cmd_doc_feature(args) -> dict:
+    """Create documentation for a feature."""
+    with file_lock():
+        manifest = read_json(DOCS_ROOT / "manifest.json")
+        if not manifest:
+            return err("Project not initialized.")
+        
+        feat_idx = next((i for i, f in enumerate(manifest["features"]["confirmed"]) if f["id"] == args.id), None)
+        if feat_idx is None:
+            return err(f"Feature not found: {args.id}")
+        
+        feature = manifest["features"]["confirmed"][feat_idx]
+        
+        capabilities = parse_json_arg(args.capabilities, "capabilities")
+        if isinstance(capabilities, dict) and not capabilities.get("success", True):
+            return capabilities
+        
+        tiers = parse_json_arg(args.tiers, "tiers")
+        if isinstance(tiers, dict) and not tiers.get("success", True):
+            return tiers
+        
+        limitations = parse_json_arg(args.limitations, "limitations") or []
+        configuration = parse_json_arg(args.configuration, "configuration") or []
+        workflows = parse_json_arg(args.workflows, "workflows") or []
+        faq = parse_json_arg(args.faq, "faq") or []
+        related = parse_json_arg(args.related, "related") or []
+        
+        feature_dir = DOCS_ROOT / "features" / args.id
+        feature_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Write _feature.json (structured data)
+        feature_data = {
+            "id": args.id,
+            "name": feature["name"],
+            "category": feature["category"],
+            "status": "documented",
+            "documented_at": now_iso(),
+            "tier_availability": tiers,
+            "description": args.description,
+            "capabilities": capabilities,
+            "limitations": limitations,
+            "configuration": configuration,
+            "related_features": related
+        }
+        write_json(feature_dir / "_feature.json", feature_data)
+        
+        # Write overview.md
+        content = generate_feature_md(feature["name"], args.description, tiers, capabilities, limitations, configuration, workflows, faq, related)
+        write_text(feature_dir / "overview.md", content)
+
+        # Generate RAG-optimized chunks
+        chunks_dir = feature_dir / "chunks"
+        chunks_dir.mkdir(parents=True, exist_ok=True)
+        chunk_files = []
+
+        # Overview chunk
+        overview_chunk = generate_overview_chunk(args.id, feature["name"], args.description, tiers)
+        write_text(chunks_dir / f"{args.id}-overview.md", overview_chunk)
+        chunk_files.append(f"{args.id}-overview.md")
+
+        # Capability chunks
+        for i, cap in enumerate(capabilities or []):
+            chunk = generate_capability_chunk(args.id, feature["name"], cap, tiers)
+            filename = f"{args.id}-cap-{i:02d}-{slugify(cap.get('name', 'unnamed'))}.md"
+            write_text(chunks_dir / filename, chunk)
+            chunk_files.append(filename)
+
+        # FAQ chunks
+        for i, qa in enumerate(faq or []):
+            chunk = generate_faq_chunk(args.id, feature["name"], qa)
+            filename = f"{args.id}-faq-{i:02d}.md"
+            write_text(chunks_dir / filename, chunk)
+            chunk_files.append(filename)
+
+        # Limitation chunks
+        for i, lim in enumerate(limitations or []):
+            chunk = generate_limitation_chunk(args.id, feature["name"], lim)
+            filename = f"{args.id}-lim-{i:02d}.md"
+            write_text(chunks_dir / filename, chunk)
+            chunk_files.append(filename)
+
+        # Workflow chunks
+        for i, wf in enumerate(workflows or []):
+            chunk = generate_workflow_chunk(args.id, feature["name"], wf)
+            filename = f"{args.id}-wf-{i:02d}-{slugify(wf.get('name', 'workflow'))}.md"
+            write_text(chunks_dir / filename, chunk)
+            chunk_files.append(filename)
+
+        manifest["features"]["confirmed"][feat_idx].update({
+            "status": "documented",
+            "documented_at": now_iso(),
+            "doc_path": str(feature_dir.relative_to(DOCS_ROOT))
+        })
+        manifest["stats"]["features"]["documented"] += 1
+        manifest["last_activity"] = now_iso()
+        manifest["work_log"].append({"timestamp": now_iso(), "phase": "documentation", "action": "documented", "target": args.id, "result": "success"})
+
+        write_json(DOCS_ROOT / "manifest.json", manifest)
+        return ok({"id": args.id, "doc_path": str(feature_dir), "files": ["_feature.json", "overview.md"], "chunks": chunk_files})
+
+
+# =============================================================================
+# MARKDOWN GENERATORS
+# =============================================================================
+
+def generate_page_md(page: dict, purpose: str, actions: list, permissions: list, features: list, states: list, related: list, notes: str) -> str:
+    """Generate page documentation markdown."""
+    title = " > ".join(p.replace("-", " ").title() for p in page["route"].strip("/").split("/") if not p.startswith(":")) or "Home"
+    
+    lines = [
+        f"# {title}",
+        "",
+        f"**Route**: `{page['route']}`",
+        "",
+        "## Purpose",
+        "",
+        purpose,
+        "",
+        "## What Users Can Do",
+        ""
+    ]
+    
+    if actions:
+        for a in actions:
+            line = f"- **{a.get('name', 'Action')}**"
+            if a.get("trigger"):
+                line += f" ({a['trigger']})"
+            if a.get("result"):
+                line += f": {a['result']}"
+            lines.append(line)
+    else:
+        lines.append("*No interactive elements documented.*")
+    
+    if permissions:
+        lines.extend(["", "## Required Permissions", "", ", ".join(f"`{p}`" for p in permissions)])
+    
+    if states:
+        lines.extend(["", "## Page States", ""])
+        for s in states:
+            lines.append(f"### {s.get('name', 'State')}")
+            if s.get("condition"):
+                lines.append(f"**When**: {s['condition']}")
+            if s.get("description"):
+                lines.extend(["", s["description"]])
+            lines.append("")
+    
+    if features or related:
+        lines.extend(["", "## Related", ""])
+        if features:
+            lines.append("**Features**: " + ", ".join(f"[[{f}]]" for f in features))
+        for r in related:
+            lines.append(f"- [[{r.get('type', 'page')}:{r.get('id', '')}]]: {r.get('relationship', '')}")
+    
+    if notes:
+        lines.extend(["", "## Notes", "", notes])
+    
+    lines.extend(["", "---", f"*Generated: {now_iso()}*"])
+    return "\n".join(lines)
+
+
+def generate_api_md(api: dict, purpose: str, ui_trigger: str, params: dict, request_body: dict, response: dict, errors: list, permissions: list) -> str:
+    """Generate API documentation markdown."""
+    lines = [
+        f"# {api['method']} {api['route']}",
+        "",
+        f"**Type**: {api['type'].replace('-', ' ').title()}",
+        f"**Authentication**: {api['auth'].title()}",
+        "",
+        "## Purpose",
+        "",
+        purpose,
+        "",
+        "## UI Trigger",
+        "",
+        ui_trigger,
+    ]
+    
+    if params:
+        lines.extend(["", "## Parameters", "", "| Name | Type | Required | Description |", "|------|------|----------|-------------|"])
+        for name, info in params.items():
+            req = "Yes" if info.get("required") else "No"
+            lines.append(f"| `{name}` | {info.get('type', 'string')} | {req} | {info.get('description', '')} |")
+    
+    if request_body:
+        lines.extend(["", "## Request Body", "", "```json", json.dumps(request_body, indent=2), "```"])
+    
+    if response:
+        lines.extend(["", "## Response", "", "```json", json.dumps(response, indent=2), "```"])
+    
+    if errors:
+        lines.extend(["", "## Error Responses", ""])
+        for e in errors:
+            lines.append(f"- **{e.get('code', '')}**: {e.get('message', '')}")
+            if e.get("condition"):
+                lines.append(f"  - When: {e['condition']}")
+    
+    if permissions:
+        lines.extend(["", "## Required Permissions", "", ", ".join(f"`{p}`" for p in permissions)])
+    
+    lines.extend(["", "---", f"*Generated: {now_iso()}*"])
+    return "\n".join(lines)
+
+
+def generate_feature_md(name: str, description: str, tiers: dict, capabilities: list, limitations: list, configuration: list, workflows: list, faq: list, related: list) -> str:
+    """Generate feature documentation markdown."""
+    lines = [
+        f"# {name}",
+        "",
+        "## What It Is",
+        "",
+        description,
+        "",
+        "## Availability",
+        "",
+        "| Plan | What You Get |",
+        "|------|--------------|"
+    ]
+    
+    for tier, desc in tiers.items():
+        lines.append(f"| **{tier.title()}** | {desc} |")
+    
+    lines.extend(["", "## Key Capabilities", ""])
+    for cap in capabilities:
+        lines.append(f"- **{cap.get('name', '')}**: {cap.get('description', '')}")
+    
+    if workflows:
+        lines.extend(["", "## Getting Started", ""])
+        first_wf = workflows[0]
+        for i, step in enumerate(first_wf.get("steps", []), 1):
+            lines.append(f"{i}. {step}")
+        
+        if len(workflows) > 1:
+            lines.extend(["", "## Common Workflows", ""])
+            for wf in workflows[1:]:
+                lines.extend([f"### {wf.get('name', 'Workflow')}", f"**Goal**: {wf.get('goal', '')}", ""])
+                for i, step in enumerate(wf.get("steps", []), 1):
+                    lines.append(f"{i}. {step}")
+                lines.append("")
+    
+    if configuration:
+        lines.extend(["", "## Configuration", "", "| Setting | Location | Default | Description |", "|---------|----------|---------|-------------|"])
+        for cfg in configuration:
+            lines.append(f"| {cfg.get('name', '')} | {cfg.get('location', '')} | {cfg.get('default', '')} | {cfg.get('description', '')} |")
+    
+    if limitations:
+        lines.extend(["", "## Limitations", ""])
+        for lim in limitations:
+            lines.append(f"- **{lim.get('description', '')}**: {lim.get('detail', '')}")
+            if lim.get("workaround"):
+                lines.append(f"  - *Workaround*: {lim['workaround']}")
+    
+    if related:
+        lines.extend(["", "## Related Features", ""])
+        for r in related:
+            lines.append(f"- [[{r.get('id', '')}]]: {r.get('relationship', '')}")
+    
+    if faq:
+        lines.extend(["", "## FAQ", ""])
+        for qa in faq:
+            lines.extend([f"**Q: {qa.get('q', '')}**", f"A: {qa.get('a', '')}", ""])
+    
+    lines.extend(["", "---", f"*Generated: {now_iso()}*"])
+    return "\n".join(lines)
+
+
+# =============================================================================
+# RAG CHUNK GENERATORS
+# =============================================================================
+
+def generate_capability_chunk(feature_id: str, feature_name: str, cap: dict, tiers: dict) -> str:
+    """Generate self-contained capability chunk (~100-150 tokens)."""
+    tier_info = []
+    for tier, desc in tiers.items():
+        if desc and desc is not True:
+            tier_info.append(f"- **{tier.title()}**: {desc}")
+        elif desc is True:
+            tier_info.append(f"- **{tier.title()}**: Available")
+
+    tier_section = "\n".join(tier_info) if tier_info else "Available on all plans."
+
+    keywords = [feature_id, slugify(cap.get('name', '')), feature_name.lower()]
+    keywords = [k for k in keywords if k]
+
+    return f"""---
+type: capability
+feature: {feature_id}
+id: {feature_id}-cap-{slugify(cap.get('name', 'unnamed'))}
+keywords: [{', '.join(keywords)}]
+---
+
+# {cap.get('name', 'Capability')} ({feature_name})
+
+{cap.get('description', '')}
+
+**Availability**:
+{tier_section}
+
+This capability is part of the {feature_name} feature.
+"""
+
+
+def generate_faq_chunk(feature_id: str, feature_name: str, qa: dict) -> str:
+    """Generate Q&A chunk (~50-100 tokens)."""
+    question = qa.get('q', '')
+    answer = qa.get('a', '')
+
+    return f"""---
+type: faq
+feature: {feature_id}
+id: {feature_id}-faq-{slugify(question[:30])}
+question: "{question}"
+---
+
+# {feature_name}: {question}
+
+{answer}
+"""
+
+
+def generate_limitation_chunk(feature_id: str, feature_name: str, lim: dict) -> str:
+    """Generate limitation chunk (~80-120 tokens)."""
+    description = lim.get('description', '')
+    detail = lim.get('detail', '')
+    workaround = lim.get('workaround', '')
+
+    content = f"""---
+type: limitation
+feature: {feature_id}
+id: {feature_id}-lim-{slugify(description[:30])}
+keywords: [{feature_id}, limitation, {slugify(description)}]
+---
+
+# {feature_name} Limitation: {description}
+
+{detail}
+"""
+
+    if workaround:
+        content += f"\n**Workaround**: {workaround}\n"
+
+    return content
+
+
+def generate_workflow_chunk(feature_id: str, feature_name: str, wf: dict) -> str:
+    """Generate workflow chunk (~100-150 tokens)."""
+    name = wf.get('name', 'Workflow')
+    goal = wf.get('goal', '')
+    steps = wf.get('steps', [])
+
+    steps_md = "\n".join(f"{i+1}. {step}" for i, step in enumerate(steps))
+
+    return f"""---
+type: workflow
+feature: {feature_id}
+id: {feature_id}-wf-{slugify(name)}
+keywords: [{feature_id}, how to, {slugify(name)}]
+---
+
+# How to {name} ({feature_name})
+
+**Goal**: {goal}
+
+## Steps
+
+{steps_md}
+"""
+
+
+def generate_overview_chunk(feature_id: str, feature_name: str, description: str, tiers: dict) -> str:
+    """Generate feature overview chunk (~100 tokens)."""
+    tier_info = []
+    for tier, desc in tiers.items():
+        if desc and desc is not True:
+            tier_info.append(f"- **{tier.title()}**: {desc}")
+        elif desc is True:
+            tier_info.append(f"- **{tier.title()}**: Available")
+
+    tier_section = "\n".join(tier_info) if tier_info else "Available on all plans."
+
+    return f"""---
+type: overview
+feature: {feature_id}
+id: {feature_id}-overview
+keywords: [{feature_id}, what is, {feature_name.lower()}]
+---
+
+# What is {feature_name}?
+
+{description}
+
+**Availability**:
+{tier_section}
+"""
+
+
+# =============================================================================
+# TODOS
+# =============================================================================
+
+def cmd_add_todo(args) -> dict:
+    """Create a TODO for investigation."""
+    with file_lock():
+        manifest = read_json(DOCS_ROOT / "manifest.json")
+        if not manifest:
+            return err("Project not initialized.")
+        
+        questions = parse_json_arg(args.questions, "questions")
+        if isinstance(questions, dict) and not questions.get("success", True):
+            return questions
+        
+        investigate = parse_json_arg(args.investigate, "investigate") or []
+        
+        todo_id = generate_id("TODO", args.context[:50])
+        todo_file = DOCS_ROOT / "todos" / f"{todo_id}.json"
+        
+        if todo_file.exists():
+            return err(f"Similar TODO already exists: {todo_id}")
+        
+        todo = {
+            "id": todo_id,
+            "type": args.type,
+            "priority": args.priority,
+            "status": "pending",
+            "created_at": now_iso(),
+            "source": args.source,
+            "context": args.context,
+            "questions": questions,
+            "investigate": investigate
+        }
+        
+        write_json(todo_file, todo)
+        
+        manifest["stats"]["todos"]["created"] += 1
+        manifest["stats"]["todos"]["pending"] += 1
+        manifest["last_activity"] = now_iso()
+        manifest["work_log"].append({"timestamp": now_iso(), "phase": manifest["phase"], "action": "created_todo", "target": todo_id, "result": "success"})
+        
+        write_json(DOCS_ROOT / "manifest.json", manifest)
+        return ok({"id": todo_id, "file": str(todo_file)})
+
+
+def cmd_complete_todo(args) -> dict:
+    """Mark a TODO as complete."""
+    with file_lock():
+        manifest = read_json(DOCS_ROOT / "manifest.json")
+        
+        todo_file = DOCS_ROOT / "todos" / f"{args.id}.json"
+        if not todo_file.exists():
+            return err(f"TODO not found: {args.id}")
+        
+        todo = read_json(todo_file)
+        updates = parse_json_arg(args.updates, "updates") or []
+        
+        todo.update({
+            "status": "completed",
+            "completed_at": now_iso(),
+            "resolution": args.resolution,
+            "docs_updated": updates
+        })
+        
+        completed_dir = DOCS_ROOT / "todos" / "completed"
+        completed_dir.mkdir(exist_ok=True)
+        write_json(completed_dir / f"{args.id}.json", todo)
+        todo_file.unlink()
+        
+        manifest["stats"]["todos"]["completed"] += 1
+        manifest["stats"]["todos"]["pending"] -= 1
+        manifest["last_activity"] = now_iso()
+        manifest["work_log"].append({"timestamp": now_iso(), "phase": manifest["phase"], "action": "completed_todo", "target": args.id, "result": "success"})
+        
+        write_json(DOCS_ROOT / "manifest.json", manifest)
+        return ok({"id": args.id, "docs_updated": updates})
+
+
+# =============================================================================
+# JARGON
+# =============================================================================
+
+def cmd_add_term(args) -> dict:
+    """Add terminology to jargon file."""
+    with file_lock():
+        jargon = read_json(DOCS_ROOT / "jargon.json")
+        if not jargon:
+            jargon = {"terms": {}}
+        
+        jargon["terms"][args.term.lower()] = {
+            "definition": args.definition,
+            "aliases": parse_list_arg(args.aliases),
+            "context": args.context
+        }
+        jargon["updated_at"] = now_iso()
+        
+        write_json(DOCS_ROOT / "jargon.json", jargon)
+        return ok({"term": args.term})
+
+
+# =============================================================================
+# STATUS & QUERIES
+# =============================================================================
+
+def cmd_status(args) -> dict:
+    """Get current documentation status."""
+    manifest = read_json(DOCS_ROOT / "manifest.json")
+    if not manifest:
+        return err("Project not initialized. Run 'ux-docs init' first.")
+    
+    return ok({
+        "phase": manifest.get("phase"),
+        "phases": manifest.get("phases"),
+        "stats": manifest.get("stats"),
+        "last_activity": manifest.get("last_activity")
+    })
+
+
+def cmd_pending(args) -> dict:
+    """Get pending items of a specific type."""
+    manifest = read_json(DOCS_ROOT / "manifest.json")
+    if not manifest:
+        return err("Project not initialized.")
+    
+    if args.type == "pages":
+        all_items = manifest.get("entry_points", {}).get("pages", [])
+    elif args.type == "apis":
+        all_items = manifest.get("entry_points", {}).get("apis", [])
+    elif args.type == "features":
+        all_items = manifest.get("features", {}).get("confirmed", [])
+    elif args.type == "todos":
+        todo_dir = DOCS_ROOT / "todos"
+        all_items = []
+        if todo_dir.exists():
+            for f in todo_dir.glob("TODO-*.json"):
+                all_items.append(read_json(f))
+    else:
+        return err(f"Unknown type: {args.type}")
+    
+    items = []
+    for item in all_items:
+        if item.get("status", "pending") == "pending":
+            if args.priority and item.get("priority") != args.priority:
+                continue
+            items.append(item)
+            if len(items) >= args.limit:
+                break
+    
+    return ok({"type": args.type, "count": len(items), "items": items})
+
+
+def cmd_get(args) -> dict:
+    """Get details of a specific item."""
+    manifest = read_json(DOCS_ROOT / "manifest.json")
+    
+    if args.type == "page":
+        items = manifest.get("entry_points", {}).get("pages", [])
+    elif args.type == "api":
+        items = manifest.get("entry_points", {}).get("apis", [])
+    elif args.type == "feature":
+        items = manifest.get("features", {}).get("confirmed", [])
+    elif args.type == "todo":
+        todo_file = DOCS_ROOT / "todos" / f"{args.id}.json"
+        if todo_file.exists():
+            return ok({"item": read_json(todo_file)})
+        return err(f"TODO not found: {args.id}")
+    else:
+        return err(f"Unknown type: {args.type}")
+    
+    for item in items:
+        if item.get("id") == args.id:
+            return ok({"item": item})
+    
+    return err(f"Item not found: {args.id}")
+
+
+# =============================================================================
+# PHASE CONTROL
+# =============================================================================
+
+def cmd_phase_complete(args) -> dict:
+    """Mark a phase or subphase as complete."""
+    with file_lock():
+        manifest = read_json(DOCS_ROOT / "manifest.json")
+        if not manifest:
+            return err("Project not initialized.")
+        
+        phase_order = ["discovery", "documentation", "deep_dive", "editorial", "complete"]
+        
+        if args.subphase:
+            manifest["phases"][args.phase][args.subphase] = "completed"
+            subphases = manifest["phases"][args.phase]
+            if isinstance(subphases, dict) and all(v in ("completed", "skipped") for v in subphases.values()):
+                idx = phase_order.index(args.phase)
+                if idx < len(phase_order) - 1:
+                    manifest["phase"] = phase_order[idx + 1]
+        else:
+            manifest["phases"][args.phase] = "completed"
+            idx = phase_order.index(args.phase)
+            if idx < len(phase_order) - 1:
+                manifest["phase"] = phase_order[idx + 1]
+        
+        manifest["last_activity"] = now_iso()
+        manifest["work_log"].append({"timestamp": now_iso(), "phase": args.phase, "action": "phase_completed", "target": args.subphase or args.phase, "result": "success"})
+        
+        write_json(DOCS_ROOT / "manifest.json", manifest)
+        return ok({"phase": manifest["phase"], "message": f"Completed {args.phase}" + (f".{args.subphase}" if args.subphase else "")})
+
+
+# =============================================================================
+# ANALYSIS
+# =============================================================================
+
+def cmd_analyze(args) -> dict:
+    """Run gap analysis."""
+    with file_lock():
+        manifest = read_json(DOCS_ROOT / "manifest.json")
+        if not manifest:
+            return err("Project not initialized.")
+        
+        pages = manifest.get("entry_points", {}).get("pages", [])
+        apis = manifest.get("entry_points", {}).get("apis", [])
+        features = manifest.get("features", {}).get("confirmed", [])
+        
+        report = {
+            "generated_at": now_iso(),
+            "coverage": {
+                "pages": {"total": len(pages), "documented": sum(1 for p in pages if p.get("status") == "documented"), "gap": sum(1 for p in pages if p.get("status") != "documented")},
+                "apis": {"total": len(apis), "documented": sum(1 for a in apis if a.get("status") == "documented"), "gap": sum(1 for a in apis if a.get("status") != "documented")},
+                "features": {"total": len(features), "documented": sum(1 for f in features if f.get("status") == "documented"), "gap": sum(1 for f in features if f.get("status") != "documented")}
+            },
+            "critical_gaps": [],
+            "important_gaps": []
+        }
+        
+        for p in pages:
+            if p.get("status") != "documented" and p.get("priority") == "high":
+                report["critical_gaps"].append({"type": "page", "target": p["route"], "reason": "High-priority page undocumented"})
+        
+        for f in features:
+            if f.get("status") != "documented":
+                report["important_gaps"].append({"type": "feature", "target": f["id"], "name": f["name"]})
+        
+        editorial_dir = DOCS_ROOT / "editorial"
+        editorial_dir.mkdir(exist_ok=True)
+        write_json(editorial_dir / "gap-report.json", report)
+        
+        # Generate markdown report
+        lines = ["# Gap Analysis", "", f"**Generated**: {report['generated_at']}", "", "## Coverage", "", "| Category | Documented | Gap |", "|----------|------------|-----|"]
+        for cat, stats in report["coverage"].items():
+            lines.append(f"| {cat.title()} | {stats['documented']}/{stats['total']} | {stats['gap']} |")
+        
+        if report["critical_gaps"]:
+            lines.extend(["", "## Critical Gaps", ""])
+            for g in report["critical_gaps"]:
+                lines.append(f"- **{g['type'].title()}**: `{g['target']}` - {g['reason']}")
+        
+        write_text(editorial_dir / "gap-report.md", "\n".join(lines))
+        
+        manifest["last_activity"] = now_iso()
+        manifest["work_log"].append({"timestamp": now_iso(), "phase": "editorial", "action": "gap_analysis", "result": "success"})
+        write_json(DOCS_ROOT / "manifest.json", manifest)
+        
+        return ok({"summary": report["coverage"], "critical_gaps": len(report["critical_gaps"]), "report_path": str(editorial_dir / "gap-report.md")})
+
+
+def cmd_xref(args) -> dict:
+    """Build cross-references."""
+    with file_lock():
+        manifest = read_json(DOCS_ROOT / "manifest.json")
+        if not manifest:
+            return err("Project not initialized.")
+        
+        xref = {"generated_at": now_iso(), "page_to_feature": {}, "feature_to_page": {}, "by_route": {}}
+        
+        for page in manifest.get("entry_points", {}).get("pages", []):
+            features = page.get("features", [])
+            if features:
+                doc_path = page.get("doc_path", "")
+                xref["page_to_feature"][doc_path] = features
+                for f in features:
+                    if f not in xref["feature_to_page"]:
+                        xref["feature_to_page"][f] = []
+                    xref["feature_to_page"][f].append({"path": doc_path, "route": page["route"]})
+            
+            prefix = "/" + page["route"].strip("/").split("/")[0] if page["route"] != "/" else "/"
+            if prefix not in xref["by_route"]:
+                xref["by_route"][prefix] = []
+            xref["by_route"][prefix].append(page.get("doc_path", page["route"]))
+        
+        write_json(DOCS_ROOT / "cross-references.json", xref)
+        
+        manifest["last_activity"] = now_iso()
+        manifest["work_log"].append({"timestamp": now_iso(), "phase": "editorial", "action": "cross_referencing", "result": "success"})
+        write_json(DOCS_ROOT / "manifest.json", manifest)
+        
+        return ok({"page_feature_links": len(xref["page_to_feature"]), "output": str(DOCS_ROOT / "cross-references.json")})
+
+
+def cmd_index(args) -> dict:
+    """Generate navigation indexes."""
+    with file_lock():
+        manifest = read_json(DOCS_ROOT / "manifest.json")
+        if not manifest:
+            return err("Project not initialized.")
+        
+        project = read_json(DOCS_ROOT / "project.json")
+        name = project.get("name", "Product")
+        
+        # Group by section
+        pages_by_section = {}
+        for page in manifest.get("entry_points", {}).get("pages", []):
+            if page.get("status") == "documented":
+                section = page.get("section", "main")
+                if section not in pages_by_section:
+                    pages_by_section[section] = []
+                pages_by_section[section].append(page)
+        
+        # Main index
+        lines = [f"# {name} Documentation", "", "## Pages", ""]
+        for section, pages in sorted(pages_by_section.items()):
+            lines.append(f"### {section.title()}")
+            for page in sorted(pages, key=lambda p: p["route"]):
+                lines.append(f"- [{page['route']}]({page.get('doc_path', '')})")
+            lines.append("")
+        
+        lines.extend(["## Features", ""])
+        for feat in manifest.get("features", {}).get("confirmed", []):
+            if feat.get("status") == "documented":
+                lines.append(f"- [{feat['name']}]({feat.get('doc_path', '')}/overview.md)")
+        
+        write_text(DOCS_ROOT / "docs" / "_index.md", "\n".join(lines))
+        
+        manifest["last_activity"] = now_iso()
+        manifest["work_log"].append({"timestamp": now_iso(), "phase": "editorial", "action": "index_generation", "result": "success"})
+        write_json(DOCS_ROOT / "manifest.json", manifest)
+        
+        return ok({"indexes_created": ["docs/_index.md"]})
+
+
+def cmd_export(args) -> dict:
+    """Export documentation in RAG-optimized formats."""
+    import shutil
+
+    manifest = read_json(DOCS_ROOT / "manifest.json")
+    if not manifest:
+        return err("Project not initialized.")
+
+    output_dir = Path(args.output)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    exported = {"chunks": 0, "qa_pairs": 0, "files": []}
+
+    if args.format == "chunks":
+        # Collect all chunks/*.md files from features
+        for feature_dir in (DOCS_ROOT / "features").iterdir():
+            if not feature_dir.is_dir():
+                continue
+            chunks_dir = feature_dir / "chunks"
+            if chunks_dir.exists():
+                for chunk_file in chunks_dir.glob("*.md"):
+                    dest = output_dir / chunk_file.name
+                    shutil.copy(chunk_file, dest)
+                    exported["chunks"] += 1
+                    exported["files"].append(chunk_file.name)
+
+        return ok({
+            "format": "chunks",
+            "output_dir": str(output_dir),
+            "chunks_exported": exported["chunks"],
+            "files": exported["files"]
+        })
+
+    elif args.format == "qa-pairs":
+        # Generate JSONL from FAQ data in _feature.json files
+        qa_pairs = []
+        for feature_dir in (DOCS_ROOT / "features").iterdir():
+            if not feature_dir.is_dir():
+                continue
+            feature_json = feature_dir / "_feature.json"
+            if feature_json.exists():
+                data = read_json(feature_json)
+                feature_id = data.get("id", "")
+                feature_name = data.get("name", "")
+
+                # Extract from overview.md if present (parse FAQ section)
+                overview_file = feature_dir / "overview.md"
+                if overview_file.exists():
+                    content = overview_file.read_text()
+                    # Parse FAQ section from markdown
+                    import re
+                    faq_match = re.search(r'## FAQ\s*\n(.*?)(?=\n## |\n---|\Z)', content, re.DOTALL)
+                    if faq_match:
+                        faq_text = faq_match.group(1)
+                        # Parse Q&A pairs
+                        qa_pattern = re.compile(r'\*\*Q:\s*(.+?)\*\*\s*\nA:\s*(.+?)(?=\n\*\*Q:|\n\n|\Z)', re.DOTALL)
+                        for match in qa_pattern.finditer(faq_text):
+                            question = match.group(1).strip()
+                            answer = match.group(2).strip()
+                            qa_pairs.append({
+                                "id": f"{feature_id}-qa-{len(qa_pairs):03d}",
+                                "feature": feature_id,
+                                "feature_name": feature_name,
+                                "question": question,
+                                "answer": answer,
+                                "text": f"Q: {question}\nA: {answer}",
+                                "keywords": [feature_id, feature_name.lower()]
+                            })
+
+        # Write JSONL
+        output_file = output_dir / "qa-pairs.jsonl"
+        with open(output_file, "w") as f:
+            for qa in qa_pairs:
+                f.write(json.dumps(qa) + "\n")
+
+        exported["qa_pairs"] = len(qa_pairs)
+        return ok({
+            "format": "qa-pairs",
+            "output_file": str(output_file),
+            "qa_pairs_exported": len(qa_pairs)
+        })
+
+    elif args.format == "all":
+        # Export both formats
+        chunks_dir = output_dir / "chunks"
+        chunks_dir.mkdir(exist_ok=True)
+
+        # Export chunks
+        for feature_dir in (DOCS_ROOT / "features").iterdir():
+            if not feature_dir.is_dir():
+                continue
+            src_chunks = feature_dir / "chunks"
+            if src_chunks.exists():
+                for chunk_file in src_chunks.glob("*.md"):
+                    shutil.copy(chunk_file, chunks_dir / chunk_file.name)
+                    exported["chunks"] += 1
+
+        # Export QA pairs (reuse logic)
+        qa_pairs = []
+        for feature_dir in (DOCS_ROOT / "features").iterdir():
+            if not feature_dir.is_dir():
+                continue
+            overview_file = feature_dir / "overview.md"
+            feature_json = feature_dir / "_feature.json"
+            if overview_file.exists() and feature_json.exists():
+                data = read_json(feature_json)
+                feature_id = data.get("id", "")
+                feature_name = data.get("name", "")
+                content = overview_file.read_text()
+
+                import re
+                faq_match = re.search(r'## FAQ\s*\n(.*?)(?=\n## |\n---|\Z)', content, re.DOTALL)
+                if faq_match:
+                    faq_text = faq_match.group(1)
+                    qa_pattern = re.compile(r'\*\*Q:\s*(.+?)\*\*\s*\nA:\s*(.+?)(?=\n\*\*Q:|\n\n|\Z)', re.DOTALL)
+                    for match in qa_pattern.finditer(faq_text):
+                        qa_pairs.append({
+                            "id": f"{feature_id}-qa-{len(qa_pairs):03d}",
+                            "feature": feature_id,
+                            "feature_name": feature_name,
+                            "question": match.group(1).strip(),
+                            "answer": match.group(2).strip(),
+                            "text": f"Q: {match.group(1).strip()}\nA: {match.group(2).strip()}",
+                            "keywords": [feature_id, feature_name.lower()]
+                        })
+
+        output_file = output_dir / "qa-pairs.jsonl"
+        with open(output_file, "w") as f:
+            for qa in qa_pairs:
+                f.write(json.dumps(qa) + "\n")
+
+        return ok({
+            "format": "all",
+            "output_dir": str(output_dir),
+            "chunks_exported": exported["chunks"],
+            "qa_pairs_exported": len(qa_pairs)
+        })
+
+    else:
+        return err(f"Unknown format: {args.format}")
+
+
+# =============================================================================
+# MAIN
+# =============================================================================
+
+def main():
+    parser = argparse.ArgumentParser(prog="ux-docs", description="Documentation management for LLM agents")
+    subs = parser.add_subparsers(dest="command", required=True)
+    
+    # init
+    p = subs.add_parser("init", help="Initialize project")
+    p.add_argument("--name", required=True)
+    p.add_argument("--frontend")
+    p.add_argument("--frontend-routes")
+    p.add_argument("--backend")
+    p.add_argument("--backend-routes")
+    p.add_argument("--existing-docs")
+    p.add_argument("--skip-areas")
+    
+    # add-page
+    p = subs.add_parser("add-page", help="Register a page")
+    p.add_argument("--route", required=True)
+    p.add_argument("--component", required=True)
+    p.add_argument("--guards", default="")
+    p.add_argument("--params", default="")
+    p.add_argument("--section", default="main", choices=["main", "settings", "admin", "auth", "error", "utility"])
+    p.add_argument("--priority", default="medium", choices=["high", "medium", "low"])
+    p.add_argument("--lazy", action="store_true")
+    
+    # add-api
+    p = subs.add_parser("add-api", help="Register an API")
+    p.add_argument("--method", required=True, choices=["GET", "POST", "PUT", "PATCH", "DELETE"])
+    p.add_argument("--route", required=True)
+    p.add_argument("--handler", required=True)
+    p.add_argument("--file", required=True)
+    p.add_argument("--type", default="ui-api", choices=["ui-api", "public-api"])
+    p.add_argument("--auth", default="required", choices=["required", "optional", "none"])
+    p.add_argument("--priority", default="medium", choices=["high", "medium", "low"])
+    
+    # add-feature
+    p = subs.add_parser("add-feature", help="Register a feature")
+    p.add_argument("--id", required=True)
+    p.add_argument("--name", required=True)
+    p.add_argument("--category", required=True, help="Feature category (e.g., security, automation, collaboration)")
+    p.add_argument("--sources", required=True, help="JSON array")
+    p.add_argument("--tiers", default="all")
+    p.add_argument("--priority", default="medium", choices=["high", "medium", "low"])
+    
+    # add-candidate
+    p = subs.add_parser("add-candidate", help="Register a feature candidate")
+    p.add_argument("--id", required=True)
+    p.add_argument("--name", required=True)
+    p.add_argument("--signal", required=True)
+    p.add_argument("--source", required=True)
+    
+    # doc-page
+    p = subs.add_parser("doc-page", help="Document a page")
+    p.add_argument("--id", required=True)
+    p.add_argument("--purpose", required=True)
+    p.add_argument("--actions", required=True, help="JSON array")
+    p.add_argument("--permissions", help="JSON array")
+    p.add_argument("--features", help="JSON array")
+    p.add_argument("--states", help="JSON array")
+    p.add_argument("--related", help="JSON array")
+    p.add_argument("--notes")
+    
+    # doc-api
+    p = subs.add_parser("doc-api", help="Document an API")
+    p.add_argument("--id", required=True)
+    p.add_argument("--purpose", required=True)
+    p.add_argument("--ui-trigger", required=True)
+    p.add_argument("--params", help="JSON object")
+    p.add_argument("--request-body", help="JSON object")
+    p.add_argument("--response", help="JSON object")
+    p.add_argument("--errors", help="JSON array")
+    p.add_argument("--permissions", help="JSON array")
+    p.add_argument("--features", help="JSON array")
+    
+    # doc-feature
+    p = subs.add_parser("doc-feature", help="Document a feature")
+    p.add_argument("--id", required=True)
+    p.add_argument("--description", required=True)
+    p.add_argument("--capabilities", required=True, help="JSON array")
+    p.add_argument("--tiers", required=True, help="JSON object")
+    p.add_argument("--limitations", help="JSON array")
+    p.add_argument("--configuration", help="JSON array")
+    p.add_argument("--workflows", help="JSON array")
+    p.add_argument("--faq", help="JSON array")
+    p.add_argument("--related", help="JSON array")
+    
+    # add-todo
+    p = subs.add_parser("add-todo", help="Create a TODO")
+    p.add_argument("--type", required=True, choices=["behavior", "feature-investigation", "cross-reference", "gap"])
+    p.add_argument("--priority", required=True, choices=["critical", "high", "medium", "low"])
+    p.add_argument("--context", required=True)
+    p.add_argument("--questions", required=True, help="JSON array")
+    p.add_argument("--investigate", help="JSON array")
+    p.add_argument("--source")
+    
+    # complete-todo
+    p = subs.add_parser("complete-todo", help="Complete a TODO")
+    p.add_argument("--id", required=True)
+    p.add_argument("--resolution", required=True)
+    p.add_argument("--updates", help="JSON array")
+    
+    # add-term
+    p = subs.add_parser("add-term", help="Add jargon term")
+    p.add_argument("--term", required=True)
+    p.add_argument("--definition", required=True)
+    p.add_argument("--aliases", default="")
+    p.add_argument("--context", default="")
+    
+    # status
+    subs.add_parser("status", help="Get status")
+    
+    # pending
+    p = subs.add_parser("pending", help="Get pending items")
+    p.add_argument("--type", required=True, choices=["pages", "apis", "features", "todos"])
+    p.add_argument("--limit", type=int, default=10)
+    p.add_argument("--priority", choices=["high", "medium", "low"])
+    
+    # get
+    p = subs.add_parser("get", help="Get item details")
+    p.add_argument("--type", required=True, choices=["page", "api", "feature", "todo"])
+    p.add_argument("--id", required=True)
+    
+    # phase-complete
+    p = subs.add_parser("phase-complete", help="Mark phase complete")
+    p.add_argument("--phase", required=True, choices=["discovery", "documentation", "deep_dive", "editorial"])
+    p.add_argument("--subphase")
+    
+    # analyze
+    subs.add_parser("analyze", help="Run gap analysis")
+    
+    # xref
+    subs.add_parser("xref", help="Build cross-references")
+    
+    # index
+    subs.add_parser("index", help="Generate indexes")
+
+    # export
+    p = subs.add_parser("export", help="Export documentation for RAG")
+    p.add_argument("--format", required=True, choices=["chunks", "qa-pairs", "all"], help="Export format")
+    p.add_argument("--output", required=True, help="Output directory")
+
+    args = parser.parse_args()
+    
+    commands = {
+        "init": cmd_init, "add-page": cmd_add_page, "add-api": cmd_add_api,
+        "add-feature": cmd_add_feature, "add-candidate": cmd_add_candidate,
+        "doc-page": cmd_doc_page, "doc-api": cmd_doc_api, "doc-feature": cmd_doc_feature,
+        "add-todo": cmd_add_todo, "complete-todo": cmd_complete_todo,
+        "add-term": cmd_add_term, "status": cmd_status, "pending": cmd_pending,
+        "get": cmd_get, "phase-complete": cmd_phase_complete,
+        "analyze": cmd_analyze, "xref": cmd_xref, "index": cmd_index,
+        "export": cmd_export
+    }
+    
+    try:
+        result = commands[args.command](args)
+        print(json.dumps(result, indent=2))
+        sys.exit(0 if result.get("success") else 1)
+    except Exception as e:
+        print(json.dumps({"success": False, "error": str(e)}), file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

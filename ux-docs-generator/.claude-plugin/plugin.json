@@ -1,0 +1,19 @@
+{
+  "name": "ux-docs",
+  "version": "2.0.0",
+  "description": "Extract comprehensive UX documentation from code using AI agents backed by a single-file CLI. Discovers UI pages, APIs, and features, then documents user-facing behavior to power an AI product expert.",
+  "agents": [
+    "./agents/ui-discovery.md",
+    "./agents/api-discovery.md",
+    "./agents/feature-discovery.md",
+    "./agents/page-documenter.md",
+    "./agents/api-documenter.md",
+    "./agents/feature-documenter.md",
+    "./agents/todo-processor.md",
+    "./agents/feature-investigator.md",
+    "./agents/gap-analyzer.md",
+    "./agents/cross-referencer.md",
+    "./agents/index-generator.md"
+  ],
+  "skills": "./skills/"
+}

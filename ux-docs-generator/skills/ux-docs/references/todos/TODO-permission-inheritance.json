@@ -1,0 +1,28 @@
+{
+  "id": "TODO-a1b2c3d4",
+  "type": "behavior",
+  "priority": "high",
+  "status": "pending",
+  "created_at": "2024-12-20T11:35:00Z",
+  "created_by": "page-documenter",
+  "source": "docs/pages/settings/permissions.md",
+  
+  "context": "While documenting the Permissions Settings page, noticed references to 'inherited permissions' in the role detail panel. The UI shows an 'Inherited' badge on some permissions, and there's a toggle in Workspace Settings for 'Permission inheritance'. This appears to be an Enterprise-only feature but the exact behavior is unclear from the UI code alone.",
+  
+  "questions": [
+    "How does permission inheritance work between parent and child workspaces?",
+    "Which plans have inheritance enabled?",
+    "Can inheritance be overridden at the child workspace level?",
+    "How is inheritance displayed in the UI (badges, tooltips)?",
+    "What happens when a parent workspace permission is removed?"
+  ],
+  
+  "investigate": [
+    "src/hooks/usePermissions.ts",
+    "src/components/PermissionBadge.tsx",
+    "src/Api/Auth/PermissionInheritanceService.cs",
+    "src/pages/Settings/Workspace/Security.tsx"
+  ],
+  
+  "notes": "This is likely a significant sub-feature of RBAC that should be documented in the RBAC feature docs. May warrant its own section in the capabilities list."
+}

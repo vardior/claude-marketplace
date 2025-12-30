@@ -1,0 +1,13 @@
+{
+  "PostToolUse": [
+    {
+      "matcher": "mcp__context7__resolve-library-id",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "cat << 'EOF'\n{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PostToolUse\",\n    \"additionalContext\": \"IMPORTANT: Now that you have the library ID, use the context7-researcher subagent (Task tool with subagent_type='context7:context7-researcher') to fetch the documentation. Do NOT call mcp__context7__get-library-docs directly from the main conversation.\"\n  }\n}\nEOF\n"
+        }
+      ]
+    }
+  ]
+}

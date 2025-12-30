@@ -1,0 +1,24 @@
+{
+  "name": "context7-agent",
+  "description": "Context7 integration with a subagent-first workflow for fetching OSS library documentation",
+  "version": "1.0.0",
+  "author": {
+    "name": "orvardi"
+  },
+  "license": "MIT",
+  "keywords": ["context7", "documentation", "mcp", "subagent"],
+  "agents": "./agents/context7-researcher.md",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "mcp__context7__resolve-library-id",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/context7-subagent-nudge.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "orvardi-plugins",
+  "owner": {
+    "name": "orvardi"
+  },
+  "metadata": {
+    "description": "A collection of Claude Code plugins for enhanced development workflows",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "context7-agent",
+      "source": "./context7-agent",
+      "description": "Context7 integration with a subagent-first workflow for fetching OSS library documentation",
+      "version": "1.0.0",
+      "license": "MIT",
+      "keywords": ["context7", "documentation", "mcp", "subagent"]
+    },
+    {
+      "name": "ux-docs-generator",
+      "source": "./ux-docs-generator",
+      "description": "Extract comprehensive UX documentation from code using AI agents. Discovers UI pages, APIs, and features to power an AI product expert via RAG.",
+      "version": "2.0.0",
+      "license": "MIT",
+      "keywords": ["documentation", "ux", "rag", "ai-assistant", "product-docs"]
+    }
+  ]
+}

@@ -32,8 +32,8 @@ This shows overall stats: pages documented, APIs documented, features documented
 ```
 
 This generates:
-- `.ux-doccs/editorial/gap-report.json` - Structured data
-- `.ux-doccs/editorial/gap-report.md` - Human-readable summary
+- `.ux-docs/editorial/gap-report.json` - Structured data
+- `.ux-docs/editorial/gap-report.md` - Human-readable summary
 
 ### 3. Review the Report
 
@@ -80,7 +80,7 @@ For each critical gap, create a TODO:
 ./ux-docs analyze
 
 # Review output
-cat .ux-doccs/editorial/gap-report.md
+cat .ux-docs/editorial/gap-report.md
 
 # Create TODOs for critical items
 ./ux-docs add-todo \

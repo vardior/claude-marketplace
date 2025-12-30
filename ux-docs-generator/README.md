@@ -34,10 +34,10 @@ If interrupted, just run `/ux-docs` again—it resumes where it left off.
 
 ## Output
 
-Documentation is saved to `.ux-doccs/` in your project:
+Documentation is saved to `.ux-docs/` in your project:
 
 ```
-.ux-doccs/
+.ux-docs/
 ├── pages/          # One file per UI page
 ├── apis/           # One file per API endpoint
 ├── features/       # One file per product feature
@@ -63,7 +63,7 @@ Each documented feature, page, and API includes:
 ### Example: Feature Documentation
 
 ```json
-// .ux-doccs/features/rbac/_feature.json
+// .ux-docs/features/rbac/_feature.json
 {
   "id": "rbac",
   "name": "Role-Based Access Control",
@@ -86,7 +86,7 @@ Each documented feature, page, and API includes:
 **Vector Database Ingestion**
 ```python
 # Ingest both JSON (structured queries) and Markdown (semantic search)
-for feature_dir in glob(".ux-doccs/features/*/"):
+for feature_dir in glob(".ux-docs/features/*/"):
     metadata = json.load(open(f"{feature_dir}/_feature.json"))
     content = open(f"{feature_dir}/overview.md").read()
 
@@ -105,7 +105,7 @@ for feature_dir in glob(".ux-doccs/features/*/"):
 **Query Enhancement**
 ```python
 # Use jargon.json to expand user queries
-jargon = json.load(open(".ux-doccs/jargon.json"))
+jargon = json.load(open(".ux-docs/jargon.json"))
 
 def expand_query(query):
     for term, definition in jargon.items():

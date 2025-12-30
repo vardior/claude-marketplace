@@ -23,7 +23,7 @@ Create cross-reference indexes that enable:
 ./ux-docs xref
 ```
 
-This generates `.ux-doccs/cross-references.json` with:
+This generates `.ux-docs/cross-references.json` with:
 - `page_to_feature` - Which features each page touches
 - `feature_to_page` - Where each feature is accessed
 - `by_route` - Pages grouped by route prefix
@@ -65,7 +65,7 @@ The `./ux-docs xref` command automatically:
 ./ux-docs xref
 
 # Review output
-cat .ux-doccs/cross-references.json
+cat .ux-docs/cross-references.json
 
 # If you find missing links while reviewing
 ./ux-docs add-todo \

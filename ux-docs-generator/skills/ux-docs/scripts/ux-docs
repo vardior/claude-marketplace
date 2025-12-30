@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 # CONFIGURATION
 # =============================================================================
 
-DOCS_ROOT = Path(".ux-doccs")
+DOCS_ROOT = Path(".ux-docs")
 LOCK_FILE = DOCS_ROOT / ".lock"
 
 
@@ -127,7 +127,7 @@ def cmd_init(args) -> dict:
         project_file = DOCS_ROOT / "project.json"
         
         if project_file.exists():
-            return err("Project already initialized. Delete .ux-doccs to reinitialize.")
+            return err("Project already initialized. Delete .ux-docs to reinitialize.")
         
         project = {
             "name": args.name,

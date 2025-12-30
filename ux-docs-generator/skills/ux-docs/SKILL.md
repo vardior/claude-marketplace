@@ -68,7 +68,7 @@ If NO to all → it's technical, skip it.
         │              Spawns agents                    │
         ▼              with tasks                       ▼
 ┌─────────────────┐                           ┌─────────────────┐
-│  Check status   │                           │  .ux-doccs/  │
+│  Check status   │                           │  .ux-docs/  │
 │  via CLI        │◀──────────────────────────│  (all state)    │
 └─────────────────┘                           └─────────────────┘
 ```
@@ -141,7 +141,7 @@ Verify it works:
 
 # INITIALIZATION
 
-Only runs once, when `.ux-doccs/` doesn't exist.
+Only runs once, when `.ux-docs/` doesn't exist.
 
 ## 1.1 Greet and Explain
 
@@ -206,9 +206,9 @@ Look for known frontend patterns, examples:
 ```
 
 This creates:
-- `.ux-doccs/project.json`
-- `.ux-doccs/manifest.json`
-- `.ux-doccs/jargon.json`
+- `.ux-docs/project.json`
+- `.ux-docs/manifest.json`
+- `.ux-docs/jargon.json`
 - Directory structure for docs, features, todos
 
 ---
@@ -490,7 +490,7 @@ Check the `success` field and handle errors appropriately.
 
 ## Session Recovery
 
-ALL state is in `.ux-doccs/manifest.json`. When resuming:
+ALL state is in `.ux-docs/manifest.json`. When resuming:
 1. Run `./ux-docs status`
 2. Continue from current phase
 3. CLI handles all locking and atomicity

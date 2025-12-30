@@ -20,7 +20,7 @@ Create index files that help both humans and AI agents navigate the documentatio
 ./ux-docs index
 ```
 
-This generates `.ux-doccs/docs/_index.md` with:
+This generates `.ux-docs/docs/_index.md` with:
 - Links to all documented pages organized by section
 - Links to all documented features
 - Navigation structure
@@ -39,7 +39,7 @@ The `./ux-docs index` command automatically:
 1. **Reads the manifest** to find all documented items
 2. **Groups pages by section** based on route structure
 3. **Lists features** with links to their documentation
-4. **Creates a navigable index** at `.ux-doccs/docs/_index.md`
+4. **Creates a navigable index** at `.ux-docs/docs/_index.md`
 
 ## Example Session
 
@@ -48,7 +48,7 @@ The `./ux-docs index` command automatically:
 ./ux-docs index
 
 # Review output
-cat .ux-doccs/docs/_index.md
+cat .ux-docs/docs/_index.md
 ```
 
 ## Generated Structure

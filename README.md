@@ -14,11 +14,7 @@ A collection of Claude Code plugins for enhanced development workflows.
 ### Add Marketplace
 
 ```bash
-# From a local path
-claude plugin marketplace add /path/to/orvardi-plugins
-
-# From GitHub (after publishing)
-claude plugin marketplace add orvardi/orvardi-plugins
+claude plugin marketplace add vardior/claude-marketplace
 ```
 
 ### Install a Plugin
@@ -35,7 +31,7 @@ claude plugin enable context7-agent@orvardi-plugins
 
 ## For Development
 
-Test the marketplace locally:
+Test a plugin locally:
 
 ```bash
 claude --plugin-dir /path/to/claude-marketplace/context7-agent

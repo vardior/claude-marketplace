@@ -7,18 +7,5 @@
   },
   "license": "MIT",
   "keywords": ["context7", "documentation", "mcp", "subagent"],
-  "agents": "./agents/context7-researcher.md",
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "mcp__context7__resolve-library-id",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/context7-subagent-nudge.sh"
-          }
-        ]
-      }
-    ]
-  }
+  "hooks": "./hooks/hooks.json"
 }

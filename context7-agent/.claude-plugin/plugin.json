@@ -6,6 +6,5 @@
     "name": "orvardi"
   },
   "license": "MIT",
-  "keywords": ["context7", "documentation", "mcp", "subagent"],
-  "hooks": "./hooks/hooks.json"
+  "keywords": ["context7", "documentation", "mcp", "subagent"]
 }

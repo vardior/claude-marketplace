@@ -4,11 +4,11 @@ A collection of Claude Code plugins for enhanced development workflows.
 
 ## Available Plugins
 
-| Plugin | Description |
-|--------|-------------|
-| [code-review](./code-review) | local code review for branch changes with bug detection and CLAUDE.md compliance checking |
+| Plugin | Description                                                                                |
+|--------|--------------------------------------------------------------------------------------------|
+| [code-review](./code-review) | Local code review for branch changes with bug detection and CLAUDE.md compliance checking  |
 | [context7-agent](./context7-agent) | Context7 integration with a subagent-first workflow for fetching OSS library documentation |
-| [ux-docs-generator](./ux-docs-generator) | Extract comprehensive UX documentation from code to power an AI product expert via RAG |
+| [ux-docs-generator](./ux-docs-generator) | Extract comprehensive UX documentation from code to power an AI product expert via RAG     |
 
 ## Installation
 

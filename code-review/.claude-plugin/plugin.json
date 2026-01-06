@@ -1,0 +1,6 @@
+{
+  "name": "code-review",
+  "version": "1.0.0",
+  "description": "AI-powered local code review for branch changes with bug detection and CLAUDE.md compliance checking",
+  "commands": "./commands/"
+}

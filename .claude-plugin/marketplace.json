@@ -23,6 +23,14 @@
       "version": "2.0.0",
       "license": "MIT",
       "keywords": ["documentation", "ux", "rag", "ai-assistant", "product-docs"]
+    },
+    {
+      "name": "code-review",
+      "source": "./code-review",
+      "description": "AI-powered local code review for branch changes with bug detection and CLAUDE.md compliance checking",
+      "version": "1.0.0",
+      "license": "MIT",
+      "keywords": ["code-review", "git", "bugs", "compliance", "subagent"]
     }
   ]
 }
